@@ -16,6 +16,7 @@ sub run {
     my ($self, @files) = @_;
     my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
     $year += 1900;
+    $mon += 1;
 
     my $now = shell_quote(sprintf(q{%4d:%02d:%02d %02d:%02d:%02d}, $year, $mon, $mday, $hour, $min, $sec));
 
