@@ -1,0 +1,86 @@
+#!/usr/bin/env perl
+package bin::fix_exif_date;
+use strict;
+use warnings;
+
+use File::Basename qw/fileparse/;
+use String::ShellQuote qw/shell_quote/;
+
+use AnyEvent;
+use AnyEvent::Handle;
+use Coro;
+use Coro::AnyEvent;
+use Coro::Channel;
+
+sub run {
+    my ($self, @files) = @_;
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+    $year += 1900;
+
+    my $now = shell_quote(sprintf(q{%4d:%02d:%02d %02d:%02d:%02d}, $year, $mon, $mday, $hour, $min, $sec));
+
+    my @all_files;
+    while (my $file = shift @files) {
+        print "Starting $file\n";
+        my ($name,$path,$suffix) = fileparse($file);
+        next if $name eq ".";
+        next if $name eq "..";
+        next unless -e $file;
+
+        if (-d $file) {
+            push @files, glob(shell_quote($file) . "/*");
+            next;
+        }
+
+        if ($file =~ m{\.(?:jpg|jpeg|png|tiff)}i) {
+            push @all_files, $file;
+        }
+    }
+
+
+    my $in = Coro::Channel->new;
+    my @coros = map { async {
+        my ($inq, $ndate) = @_;
+        my $current = $Coro::current;
+
+        while (my $task = $inq->get) {
+            print "Fixing: $task with date: $ndate\n";
+            open(my $fh, "-|", qq{exiftool -MetadataDate=$now -AllDates=$now -overwrite_original $task}) or die "cannot launch exiftool";
+
+            my $afh = AnyEvent::Handle->new(
+                fh => $fh,
+                on_read => sub {
+                    my $handle = shift;
+                    $handle->push_read( line => sub {
+                        my ($hh, $line) = @_;
+                        chomp $line;
+                        print "$line\n";
+                    });
+                },
+                on_error => sub {
+                    warn "Error processing $task !!! :((";
+                    $current->ready;
+                },
+                on_eof => sub {
+                    $current->ready;
+                }
+            );
+            Coro::schedule;
+            undef $afh;
+            close($fh);
+
+            print "Task $task: DONE\n";
+        }
+    } $in, $now } ( 1 .. 10 );
+
+    while (@all_files) {
+        my @batch = splice(@all_files, 0, 2);
+        my $file_str = join(" ", map { shell_quote($_) } @batch);
+        $in->put($file_str);
+    }
+
+    $in->shutdown;
+    $_->join for @coros;
+}
+
+__PACKAGE__->run(@ARGV);
